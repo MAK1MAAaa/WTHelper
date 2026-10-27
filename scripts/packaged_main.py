@@ -8,7 +8,7 @@ import sys
 import time
 import tkinter as tk
 
-from scripts import auto_chest, auto_chest_supervisor, gui, save_tool, tap_boost
+from scripts import auto_chest, auto_chest_supervisor, gui, tap_boost
 from scripts.gui_backend import JobManager
 from scripts.runtime import is_frozen, project_root, worker_command
 
@@ -40,10 +40,10 @@ def gui_smoke_test() -> None:
         window = gui.HelperWindow(root, manager=_IdleManager())
         window.next_desktop_probe = float("inf")
         root.update_idletasks()
-        window.notebook.select(1)
+        window.notebook.select(0)
         root.update_idletasks()
-        if not window.saves_page.winfo_exists():
-            raise RuntimeError("GUI data page could not be created")
+        if not window.chest_start.winfo_exists() or not window.tap_start.winfo_exists():
+            raise RuntimeError("GUI controls could not be created")
     finally:
         root.destroy()
 
@@ -107,7 +107,7 @@ def self_test() -> int:
 
     environment = os.environ.copy()
     environment["PYTHONIOENCODING"] = "utf-8"
-    for script in ("save_tool.py", "auto_chest_supervisor.py"):
+    for script in ("auto_chest_supervisor.py",):
         command = worker_command(project_root() / "scripts" / script, ["--help"])
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace", timeout=20,
@@ -129,7 +129,6 @@ def main(argv: list[str] | None = None) -> int:
             "chest": auto_chest.main,
             "supervisor": auto_chest_supervisor.main,
             "tap": tap_boost.main,
-            "save": save_tool.main,
             "selftest-stop": selftest_stop,
         }
         if len(args) < 2 or args[1] not in workers:

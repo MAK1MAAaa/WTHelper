@@ -1,6 +1,7 @@
 """Source and frozen process routing must use separate commands and roots."""
 
 from pathlib import Path
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,10 @@ from scripts import auto_chest, gui, packaged_main, runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_state_root_follows_local_app_data_not_executable_directory(self) -> None:
+        with patch.dict(os.environ, {"LOCALAPPDATA": "C:/example/local"}):
+            with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", "D:/other/WTHelper.exe"):
+                self.assertEqual(runtime.state_root(), Path("C:/example/local/WTHelper"))
     def test_windowed_build_handles_missing_standard_streams(self) -> None:
         with patch.object(packaged_main, "is_frozen", return_value=True), \
              patch.object(sys, "stdin", None), patch.object(sys, "stdout", None), \

@@ -26,6 +26,26 @@ MAX_EVENTS = 2048
 MAX_LINE_LENGTH = 8192
 
 
+def update_task_error(current: str, line: str) -> str:
+    """Keep only the current actionable failure, including a recovery command."""
+    line = line.strip()
+    if "已连接桌宠主页面" in line:
+        return ""
+    markers = ("自动领取已停止：", "错误: ", "错误：", "监督进程发生错误", "启动失败（", "停止过程中领取子进程异常退出")
+    marker = next((item for item in markers if item in line), None)
+    if marker:
+        if marker == "停止过程中领取子进程异常退出" and current:
+            return (current + "\n" + line[line.index(marker):])[:4000]
+        return line[line.index(marker):][:2000]
+    if "重启已达上限" in line:
+        return (current + "\n任务重试已达上限。")[:4000] if current else line[:2000]
+    if "无法解除本进程的防睡眠请求" in line:
+        return (current + "\n" + line).strip()[:4000]
+    if current and line.startswith("& "):
+        return (current + "\n" + line)[:4000]
+    return current
+
+
 class BackendError(Exception):
     """A helper process could not be started or asked to stop."""
 
@@ -105,7 +125,7 @@ class JobManager:
 
     def start_chest(
         self, *, allow_sleep: bool = False, dry_run: bool = False,
-        interval: float = 2.0, port: int = 19227,
+        interval: float = 2.0, port: int = 19227, exe: Path | None = None,
     ) -> int:
         if type(allow_sleep) is not bool or type(dry_run) is not bool:
             raise BackendError("自动领取选项必须为布尔值。")
@@ -113,6 +133,11 @@ class JobManager:
         if type(port) is not int or not 1024 <= port <= 65535:
             raise BackendError("端口必须是 1024 到 65535 之间的整数。")
         args = ["--interval", f"{interval_number:g}", "--port", str(port)]
+        if exe is not None:
+            executable = Path(exe)
+            if executable.name.casefold() != "wuwatappo.exe" or not executable.is_file():
+                raise BackendError("所选桌宠程序不存在，请重新选择 WuwaTappo.exe。")
+            args.extend(("--exe", str(executable.resolve())))
         if allow_sleep:
             args.append("--allow-sleep")
         if dry_run:
@@ -174,6 +199,7 @@ class JobManager:
     def _collect(self, job: JobName, record: _Job) -> None:
         process = record.process
         message = ""
+        task_error = ""
         exit_code: int | None = None
         try:
             if process.stdout is not None:
@@ -181,7 +207,9 @@ class JobManager:
                     line = process.stdout.readline(MAX_LINE_LENGTH)
                     if not line:
                         break
-                    self._emit(JobEvent(job, "output", line.rstrip("\r\n"), pid=process.pid))
+                    line = line.rstrip("\r\n")
+                    task_error = update_task_error(task_error, line)
+                    self._emit(JobEvent(job, "output", line, pid=process.pid))
             exit_code = process.wait()
         except (OSError, ValueError) as error:
             message = f"读取子进程输出失败：{error}"
@@ -199,7 +227,7 @@ class JobManager:
             with self._lock:
                 if self._jobs.get(job) is record:
                     del self._jobs[job]
-                self._emit(JobEvent(job, "finished", message, pid=process.pid, returncode=exit_code))
+                self._emit(JobEvent(job, "finished", task_error or message, pid=process.pid, returncode=exit_code))
 
     def stop(self, job: JobName) -> bool:
         if job not in ("chest", "tap"):
@@ -212,14 +240,14 @@ class JobManager:
                 return True
             stream = record.process.stdin
             if stream is None:
-                raise BackendError("任务的停止通道不可用，请查看运行日志。")
+                raise BackendError("任务的停止通道不可用，请确认任务是否仍在运行。")
             try:
                 stream.write("0\n")
                 stream.flush()
             except (BrokenPipeError, OSError, ValueError) as error:
                 if record.process.poll() is not None:
                     return False
-                raise BackendError("无法发送停止请求，请查看运行日志。") from error
+                raise BackendError("无法发送停止请求，请确认任务是否仍在运行。") from error
             record.stop_requested = True
             self._emit(JobEvent(job, "stopping", pid=record.process.pid))
             return True
@@ -260,6 +288,6 @@ class JobManager:
                     break
                 dropped = self._dropped[job]
                 if dropped:
-                    events.append(JobEvent(job, "output", f"输出过多，已省略 {dropped} 条日志。"))
+                    events.append(JobEvent(job, "output", f"状态消息过多，已省略 {dropped} 条。"))
                     self._dropped[job] = 0
         return events

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import ttk
 
 if __package__:
     from .gui_theme import (FIELD, GREEN, GREEN_PALE, INK, LINE, MUTED,
-                            PANEL, PAPER, SIDEBAR, RoundedButton,
+                            PANEL, PAPER, RoundedButton,
                             RoundedPanel)
 else:
     from gui_theme import (FIELD, GREEN, GREEN_PALE, INK, LINE, MUTED,
-                           PANEL, PAPER, SIDEBAR, RoundedButton,
+                           PANEL, PAPER, RoundedButton,
                            RoundedPanel)
 
 if TYPE_CHECKING:
@@ -49,14 +49,9 @@ def configure_styles(root: tk.Tk) -> None:
                     font=("Microsoft YaHei UI", 17, "bold"))
     style.configure("CardTitle.Card.TLabel", background=PANEL, foreground=INK,
                     font=("Microsoft YaHei UI", 13, "bold"))
-    style.configure("Side.TFrame", background=SIDEBAR)
-    style.configure("SideBrand.TLabel", background=SIDEBAR, foreground="#f5f5e9",
-                    font=("Segoe UI", 13, "bold"))
-    style.configure("SideSmall.TLabel", background=SIDEBAR, foreground="#a3b3a5",
-                    font=("Microsoft YaHei UI", 9))
-    style.configure("Quiet.TButton", background=PANEL, foreground=GREEN, borderwidth=0,
-                    focusthickness=1, focuscolor=GREEN, padding=(9, 5))
-    style.map("Quiet.TButton", background=[("active", GREEN_PALE)])
+    style.configure("Toolbar.TButton", background=PAPER, foreground=GREEN, borderwidth=0,
+                    focusthickness=1, focuscolor=GREEN, padding=(9, 6))
+    style.map("Toolbar.TButton", background=[("active", GREEN_PALE)])
     style.configure("Input.TEntry", fieldbackground=FIELD, foreground=INK,
                     bordercolor=LINE, lightcolor=LINE, darkcolor=LINE, padding=(8, 6))
     style.map("Input.TEntry", bordercolor=[("focus", GREEN)])
@@ -71,61 +66,40 @@ def configure_styles(root: tk.Tk) -> None:
 
 def build_layout(
     app: HelperWindow,
-    create_saves_page: Callable[..., ttk.Frame],
     modes: Sequence[str],
 ) -> None:
     root = app.root
-    root.columnconfigure(0, weight=0, minsize=162)
-    root.columnconfigure(1, weight=1)
+    root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
 
-    sidebar = ttk.Frame(root, style="Side.TFrame", padding=(13, 18, 13, 16))
-    sidebar.grid(row=0, column=0, sticky="nsew")
-    sidebar.columnconfigure(0, weight=1)
-    sidebar.rowconfigure(4, weight=1)
-    brand = ttk.Frame(sidebar, style="Side.TFrame")
-    brand.grid(row=0, column=0, sticky="ew", pady=(0, 25))
-    ttk.Label(brand, text="WTHelper", style="SideBrand.TLabel").grid(row=0, column=0, sticky="w", padx=(8, 0))
-
-    app.nav_home = RoundedButton(sidebar, text="运行控制", width=136, height=40,
-                                 navigation=True, selected=True, command=lambda: select_page(app, 0))
-    app.nav_home.grid(row=1, column=0, sticky="ew", pady=(0, 4))
-    app.nav_data = RoundedButton(sidebar, text="本地数据", width=136, height=40,
-                                 navigation=True, command=lambda: select_page(app, 1))
-    app.nav_data.grid(row=2, column=0, sticky="ew")
-
-    side_footer = ttk.Frame(sidebar, style="Side.TFrame")
-    side_footer.grid(row=5, column=0, sticky="sew")
-    side_footer.columnconfigure(0, weight=1)
-    rights = "管理员权限已启用" if app.admin else "当前为普通权限"
-    ttk.Label(side_footer, text=rights, style="SideSmall.TLabel").grid(row=0, column=0, sticky="w")
-    if not app.admin:
-        RoundedButton(side_footer, text="以管理员身份运行", width=136, height=38,
-                      navigation=True, selected=True, command=app.elevate).grid(row=1, column=0, sticky="ew", pady=(8, 0))
-
     main = ttk.Frame(root, padding=(18, 16, 18, 16))
-    main.grid(row=0, column=1, sticky="nsew")
+    main.grid(row=0, column=0, sticky="nsew")
     main.columnconfigure(0, weight=1)
     main.rowconfigure(1, weight=1)
     heading = ttk.Frame(main)
     heading.grid(row=0, column=0, sticky="ew", pady=(0, 12))
     heading.columnconfigure(0, weight=1)
-    app.page_heading = tk.StringVar(master=root, value="运行控制")
-    ttk.Label(heading, textvariable=app.page_heading, style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Label(heading, text="WTHelper", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
     ttk.Label(heading, textvariable=app.desktop_status, foreground=GREEN, background=GREEN_PALE,
               padding=(10, 5), font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=1, sticky="e")
+    ttk.Button(heading, text="选择桌宠", style="Toolbar.TButton",
+               command=app.choose_desktop).grid(row=0, column=2, padx=(8, 0))
+    if not app.admin:
+        ttk.Button(heading, text="以管理员身份运行", style="Toolbar.TButton",
+                   command=app.elevate).grid(row=0, column=3, padx=(8, 0))
 
     app.notebook = ttk.Notebook(main, style="Hidden.TNotebook")
     app.notebook.grid(row=1, column=0, sticky="nsew")
     control = ttk.Frame(app.notebook)
     control.columnconfigure((0, 1), weight=1, uniform="control-cards")
-    control.rowconfigure(1, weight=1)
+    control.rowconfigure(0, weight=1)
     app.notebook.add(control, text="运行控制")
 
-    chest_panel = RoundedPanel(control, height=280, padding=10)
+    chest_panel = RoundedPanel(control, height=330, padding=10)
     chest_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
     chest = chest_panel.content
     chest.columnconfigure(0, weight=1)
+    chest.rowconfigure(4, weight=1)
     ttk.Label(chest, text="自动领取", style="CardTitle.Card.TLabel").grid(row=0, column=0, sticky="w")
     ttk.Label(chest, textvariable=app.chest_status, style="Status.Card.TLabel").grid(row=0, column=1, sticky="e")
     ttk.Checkbutton(chest, text="允许设备自动睡眠", variable=app.allow_sleep,
@@ -135,18 +109,22 @@ def build_layout(
     chest_hint = ttk.Label(chest, text="默认保持设备清醒，屏幕可正常关闭。", style="Muted.Card.TLabel",
                            font=("Microsoft YaHei UI", 9), wraplength=310)
     chest_hint.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 12))
-    bind_responsive_wrap(chest, chest_hint)
     chest_buttons = ttk.Frame(chest, style="Card.TFrame")
-    chest_buttons.grid(row=4, column=0, columnspan=2, sticky="sw")
+    chest_buttons.grid(row=5, column=0, columnspan=2, sticky="sw")
     app.chest_start = RoundedButton(chest_buttons, text="开始领取", primary=True, command=app.start_chest, width=112, height=36)
     app.chest_start.grid(row=0, column=0, padx=(0, 8))
     app.chest_stop = RoundedButton(chest_buttons, text="停止", command=lambda: app.stop_job("chest"), width=72, height=36, state="disabled")
     app.chest_stop.grid(row=0, column=1)
+    chest_detail = ttk.Label(chest, textvariable=app.chest_detail, style="Muted.Card.TLabel",
+                             font=("Microsoft YaHei UI", 9), wraplength=310)
+    chest_detail.grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
+    bind_responsive_wrap(chest, chest_hint, chest_detail)
 
-    tap_panel = RoundedPanel(control, height=280, padding=10)
+    tap_panel = RoundedPanel(control, height=330, padding=10)
     tap_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
     tap = tap_panel.content
     tap.columnconfigure(1, weight=1)
+    tap.rowconfigure(6, weight=1)
     ttk.Label(tap, text="敲击计数", style="CardTitle.Card.TLabel").grid(row=0, column=0, sticky="w")
     ttk.Label(tap, textvariable=app.tap_status, style="Status.Card.TLabel").grid(row=0, column=1, sticky="e")
     ttk.Label(tap, text="输入模式", style="Muted.Card.TLabel", font=("Microsoft YaHei UI", 9)).grid(row=2, column=0, sticky="w", pady=(8, 4))
@@ -161,51 +139,15 @@ def build_layout(
     tap_hint = ttk.Label(tap, textvariable=app.tap_hint, style="Muted.Card.TLabel", font=("Microsoft YaHei UI", 9),
                          wraplength=310)
     tap_hint.grid(row=4, column=0, columnspan=2, sticky="w", pady=(7, 2))
-    bind_responsive_wrap(tap, tap_hint)
     ttk.Checkbutton(tap, text="预览模式 · 不发送输入", variable=app.tap_preview,
                     style="Card.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 5))
     tap_buttons = ttk.Frame(tap, style="Card.TFrame")
-    tap_buttons.grid(row=6, column=0, columnspan=2, sticky="sw")
+    tap_buttons.grid(row=7, column=0, columnspan=2, sticky="sw")
     app.tap_start = RoundedButton(tap_buttons, text="开始刷数", primary=True, command=app.start_tap, width=112, height=36)
     app.tap_start.grid(row=0, column=0, padx=(0, 8))
     app.tap_stop = RoundedButton(tap_buttons, text="停止", command=lambda: app.stop_job("tap"), width=72, height=36, state="disabled")
     app.tap_stop.grid(row=0, column=1)
-
-    log_panel = RoundedPanel(control, height=130, padding=10)
-    log_panel.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-    logs = log_panel.content
-    logs.columnconfigure(0, weight=1)
-    logs.rowconfigure(1, weight=1)
-    log_header = ttk.Frame(logs, style="Card.TFrame")
-    log_header.grid(row=0, column=0, sticky="ew", pady=(0, 7))
-    log_header.columnconfigure(0, weight=1)
-    ttk.Label(log_header, text="运行记录", style="Card.TLabel", font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
-    ttk.Button(log_header, text="日志文件", style="Quiet.TButton", command=lambda: app.open_directory("logs")).grid(row=0, column=1, padx=(4, 0))
-    ttk.Button(log_header, text="备份目录", style="Quiet.TButton", command=lambda: app.open_directory("backups")).grid(row=0, column=2, padx=(4, 0))
-    ttk.Button(log_header, text="清空显示", style="Quiet.TButton", command=app.clear_log).grid(row=0, column=3, padx=(4, 0))
-    app.log_box = scrolledtext.ScrolledText(logs, height=5, wrap="word", state="disabled", undo=False,
-                                           background=FIELD, foreground=INK, insertbackground=INK,
-                                           selectbackground="#cedfd0", relief="flat", borderwidth=0,
-                                           highlightthickness=0, padx=11, pady=9,
-                                           font=("Microsoft YaHei UI", 9))
-    app.log_box.grid(row=1, column=0, sticky="nsew")
-
-    app.saves_page = create_saves_page(
-        app.notebook, on_message=lambda text: app._append_log("本地数据", text),
-        can_write=app.can_write_saves,
-    )
-    app.notebook.add(app.saves_page, text="本地数据")
-    app.notebook.bind("<<NotebookTabChanged>>", lambda _event: update_navigation(app), add="+")
-
-
-def select_page(app: HelperWindow, index: int) -> None:
-    if not app.closing:
-        app.notebook.select(index)
-        update_navigation(app)
-
-
-def update_navigation(app: HelperWindow) -> None:
-    current = app.notebook.index("current")
-    app.nav_home.set_selected(current == 0)
-    app.nav_data.set_selected(current == 1)
-    app.page_heading.set("运行控制" if current == 0 else "本地数据")
+    tap_detail = ttk.Label(tap, textvariable=app.tap_detail, style="Muted.Card.TLabel",
+                           font=("Microsoft YaHei UI", 9), wraplength=310)
+    tap_detail.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    bind_responsive_wrap(tap, tap_hint, tap_detail)

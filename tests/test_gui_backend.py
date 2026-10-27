@@ -100,6 +100,19 @@ class JobManagerTests(unittest.TestCase):
                         operation()
         launch.assert_not_called()
 
+    def test_selected_desktop_path_is_passed_as_one_argument(self) -> None:
+        executable = Path(self.temporary.name) / "folder with spaces" / "WuwaTappo.exe"
+        executable.parent.mkdir()
+        executable.touch()
+        with patch.object(self.manager, "_start", return_value=123) as launch:
+            self.assertEqual(self.manager.start_chest(exe=executable), 123)
+        arguments = launch.call_args.args[2]
+        self.assertEqual(arguments[arguments.index("--exe") + 1], str(executable.resolve()))
+        with patch.object(self.manager, "_start") as launch:
+            with self.assertRaises(BackendError):
+                self.manager.start_chest(exe=executable.with_name("other.exe"))
+        launch.assert_not_called()
+
     def test_missing_script_and_spawn_failure_are_actionable(self) -> None:
         (self.scripts / "tap_boost.py").unlink()
         with self.assertRaisesRegex(BackendError, "未找到辅助脚本"):
@@ -121,6 +134,23 @@ class JobManagerTests(unittest.TestCase):
         events = self.collect_until(lambda rows: any(e.kind == "finished" for e in rows))
         self.assertEqual([event.returncode for event in events if event.kind == "finished"], [0])
         self.assertTrue(any("已省略" in event.message for event in events))
+
+    def test_actionable_error_survives_output_flood(self) -> None:
+        script = self.scripts / "auto_chest_supervisor.py"
+        script.write_text(
+            "for i in range(5000): print(i, flush=True)\n"
+            "print('自动领取已停止：请恢复旧策略', flush=True)\n"
+            "print('& helper --restore-legacy-policy old.json', flush=True)\n"
+            "raise SystemExit(2)\n", encoding="utf-8")
+        self.manager = JobManager(scripts_dir=self.scripts, max_events=4)
+        self.manager.start_chest()
+        deadline = time.monotonic() + 5
+        while self.manager.is_running("chest") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        events = self.collect_until(lambda rows: any(event.kind == "finished" for event in rows))
+        finished = next(event for event in events if event.kind == "finished")
+        self.assertIn("请恢复旧策略", finished.message)
+        self.assertIn("--restore-legacy-policy", finished.message)
 
     def test_stop_unknown_job_is_rejected(self) -> None:
         with self.assertRaisesRegex(BackendError, "未知任务"):

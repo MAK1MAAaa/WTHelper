@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -16,6 +17,8 @@ from unittest.mock import Mock, patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts import auto_chest as app
+from scripts import auto_chest_supervisor as supervisor
+from scripts.webview_policy import POLICY_KEY, POLICY_NAMES
 
 
 def snapshot(**changes: object) -> app.Snapshot:
@@ -27,6 +30,67 @@ def snapshot(**changes: object) -> app.Snapshot:
     }
     value.update(changes)
     return app.Snapshot.parse(value)
+
+
+class StateStorageTests(unittest.TestCase):
+    @staticmethod
+    def legacy_record(state: str) -> dict[str, object]:
+        arguments = "--remote-debugging-address=127.0.0.1 --remote-debugging-port=19227"
+        return {
+            "version": 1, "policy_key": POLICY_KEY, "state": state, "port": 19227,
+            "entries": {name: {"original": {"exists": False, "data": None, "type": None},
+                               "temporary": arguments} for name in POLICY_NAMES},
+        }
+
+    def test_pending_legacy_policy_stops_without_modifying_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "WTHelper" / "backups" / app.POLICY_BACKUP_NAME
+            old.parent.mkdir(parents=True)
+            old.write_text(json.dumps(self.legacy_record("pending")), encoding="utf-8")
+            original = old.read_bytes()
+            with patch.object(app, "PROJECT_ROOT", root / "new-location"):
+                with self.assertRaisesRegex(app.PolicyError, "尚未恢复"):
+                    app.check_legacy_policy(19227, root / "WuwaTappo.exe")
+            self.assertEqual(old.read_bytes(), original)
+
+    def test_pending_legacy_policy_shows_a_frozen_exe_recovery_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "folder's name" / "WTHelper" / "backups" / app.POLICY_BACKUP_NAME
+            old.parent.mkdir(parents=True)
+            old.write_text(json.dumps(self.legacy_record("pending")), encoding="utf-8")
+            with patch.object(app, "PROJECT_ROOT", old.parent.parent), \
+                 patch.object(app, "is_frozen", return_value=True), \
+                 patch.object(app.sys, "executable", "C:/helper's folder/WTHelper.exe"):
+                with self.assertRaises(app.PolicyError) as error:
+                    app.check_legacy_policy(19227, root / "WuwaTappo.exe")
+            self.assertIn("--worker chest --restore-legacy-policy", str(error.exception))
+            self.assertIn("helper''s folder", str(error.exception))
+            self.assertIn("folder''s name", str(error.exception))
+
+    def test_restored_legacy_policy_does_not_block_but_corrupt_record_does(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / "backups" / app.POLICY_BACKUP_NAME
+            old.parent.mkdir()
+            with patch.object(app, "PROJECT_ROOT", root):
+                old.write_text(json.dumps(self.legacy_record("restored")), encoding="utf-8")
+                app.check_legacy_policy(19227, root / "WuwaTappo.exe")
+                old.write_text("broken", encoding="utf-8")
+                with self.assertRaisesRegex(app.PolicyError, "无法安全读取"):
+                    app.check_legacy_policy(19227, root / "WuwaTappo.exe")
+
+    def test_status_reporting_does_not_create_log_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(app, "PROJECT_ROOT", Path(directory)), \
+             patch.object(supervisor, "PROJECT_ROOT", Path(directory)), \
+             redirect_stdout(io.StringIO()):
+            app.configure_file_logging()
+            supervisor.configure_file_logging()
+            app.log("状态")
+            supervisor.log("状态")
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 class ControllerTests(unittest.TestCase):
@@ -219,11 +283,63 @@ class StartupTests(unittest.TestCase):
     def common(self, stack: ExitStack) -> None:
         stack.enter_context(patch.object(app, "SingleInstance", return_value=self.lock))
         stack.enter_context(patch.object(app, "TemporaryDebugPolicy", return_value=self.policy))
+        stack.enter_context(patch.object(app, "check_legacy_policy"))
         stack.enter_context(patch.object(app, "is_elevated", return_value=True))
         stack.enter_context(patch.object(app, "app_running", return_value=False))
         stack.enter_context(patch.object(app, "PreventSleep", return_value=self.sleep_guard))
         stack.enter_context(patch.object(app, "log", side_effect=self.messages.append))
         stack.enter_context(patch.object(self.stop, "wait", return_value=False))
+
+    def test_explicit_legacy_restore_requires_no_desktop_and_closes_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / app.POLICY_BACKUP_NAME
+            with ExitStack() as stack:
+                self.common(stack)
+                self.policy.recover_pending.return_value = True
+                args = app.parse_args(["--restore-legacy-policy", str(path)])
+                self.assertEqual(app.run(args, self.stop), 0)
+                self.policy.recover_pending.assert_called_once()
+                self.lock.close.assert_called_once()
+
+    def test_check_cannot_be_combined_with_legacy_restoration(self) -> None:
+        args = app.parse_args(["--check", "--restore-legacy-policy", app.POLICY_BACKUP_NAME])
+        with patch.object(app, "TemporaryDebugPolicy") as policy, \
+             patch.object(app, "SingleInstance") as lock:
+            with self.assertRaisesRegex(app.AutoChestError, "不能与"):
+                app.run(args, self.stop)
+            policy.assert_not_called()
+            lock.assert_not_called()
+
+    def test_check_cannot_be_combined_with_central_restoration(self) -> None:
+        args = app.parse_args(["--check", "--restore-debug-policy"])
+        with patch.object(app, "TemporaryDebugPolicy") as policy, \
+             patch.object(app, "SingleInstance") as lock:
+            with self.assertRaisesRegex(app.AutoChestError, "不能与"):
+                app.run(args, self.stop)
+            policy.assert_not_called()
+            lock.assert_not_called()
+
+    def test_central_restore_does_not_need_desktop_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            self.common(stack)
+            path = str(Path(directory) / "missing" / "WuwaTappo.exe")
+            self.policy.recover_pending.return_value = True
+            args = app.parse_args(["--restore-debug-policy", "--exe", path])
+            self.assertEqual(app.run(args, self.stop), 0)
+            self.policy.recover_pending.assert_called_once()
+            self.lock.close.assert_called_once()
+
+    def test_legacy_guard_failure_releases_lock_before_creating_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            desktop = Path(directory) / "WuwaTappo.exe"
+            desktop.touch()
+            with patch.object(app, "SingleInstance", return_value=self.lock), \
+                 patch.object(app, "TemporaryDebugPolicy") as policy, \
+                 patch.object(app, "check_legacy_policy", side_effect=app.PolicyError("旧版未恢复")):
+                with self.assertRaisesRegex(app.PolicyError, "旧版未恢复"):
+                    app.run(app.parse_args(["--exe", str(desktop)]), self.stop)
+            self.lock.close.assert_called_once()
+            policy.assert_not_called()
 
     def test_elevated_app_gets_policy_before_launch_and_restores_on_exit(self) -> None:
         def launch(*_args: object) -> SimpleNamespace:

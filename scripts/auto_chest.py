@@ -12,8 +12,6 @@ from datetime import datetime
 import http.client
 import io
 import json
-import logging
-from logging.handlers import RotatingFileHandler
 import math
 import os
 from pathlib import Path
@@ -30,12 +28,12 @@ if __package__:
     from .cdp_client import CdpClient, CdpError
     from .chest_log import ChestErrorTail
     from .webview_policy import PolicyError, TemporaryDebugPolicy
-    from .runtime import external_dll_search, project_root
+    from .runtime import external_dll_search, is_frozen, project_root, state_root
 else:
     from cdp_client import CdpClient, CdpError
     from chest_log import ChestErrorTail
     from webview_policy import PolicyError, TemporaryDebugPolicy
-    from runtime import external_dll_search, project_root
+    from runtime import external_dll_search, is_frozen, project_root, state_root
 
 
 PROJECT_ROOT = project_root()
@@ -47,10 +45,7 @@ SIDE_NAMES = {"left": "左侧", "right": "右侧"}
 MAX_HTTP_BYTES = 1_048_576
 READY_GRACE_SECONDS = 10.0
 HEARTBEAT_SECONDS = 300.0
-POLICY_BACKUP = PROJECT_ROOT / "backups" / "auto_chest_webview_policy.pending.json"
-LOG_PATH = PROJECT_ROOT / "logs" / "auto_chest.log"
-LOGGER = logging.getLogger("wuwatappo.auto_chest")
-LOGGER.propagate = False
+POLICY_BACKUP_NAME = "auto_chest_webview_policy.pending.json"
 
 SNAPSHOT_FUNCTION = r"""function () {
   const metadata = globalThis.__TAURI_INTERNALS__?.metadata;
@@ -315,20 +310,38 @@ class ClaimController:
 
 def log(message: str) -> None:
     print(f"[{datetime.now().astimezone():%H:%M:%S}] {message}", flush=True)
-    LOGGER.info(message)
 
 
 def configure_file_logging() -> None:
-    if LOGGER.handlers:
-        return
-    try:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(LOG_PATH, maxBytes=1_048_576, backupCount=2, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-        LOGGER.addHandler(handler)
-        LOGGER.setLevel(logging.INFO)
-    except OSError:
-        print("日志文件无法写入，将仅在 CMD 中显示状态。", flush=True)
+    """Compatibility hook: task status is sent to stdout without log files."""
+
+
+def legacy_policy_paths(executable: Path) -> tuple[Path, ...]:
+    """Locate previous app-directory policy records without creating files."""
+    candidates = (PROJECT_ROOT / "backups" / POLICY_BACKUP_NAME,
+                  executable.parent / "WTHelper" / "backups" / POLICY_BACKUP_NAME)
+    return tuple(dict.fromkeys(path.absolute() for path in candidates))
+
+
+def check_legacy_policy(port: int, executable: Path) -> None:
+    """Fail closed if a previous version still owns a policy transaction."""
+    for path in legacy_policy_paths(executable):
+        if not path.exists():
+            continue
+        try:
+            record = TemporaryDebugPolicy(port, path)._read_backup()
+        except (OSError, PolicyError) as error:
+            raise PolicyError(f"旧版桌宠策略备份无法安全读取，请保留并检查：{path}") from error
+        if record is not None and record["state"] == "pending":
+            def quote_powershell(value: str | Path) -> str:
+                return "'" + str(value).replace("'", "''") + "'"
+
+            entry = "--worker chest" if is_frozen() else quote_powershell(Path(__file__).resolve())
+            command = f"& {quote_powershell(sys.executable)} {entry} --restore-legacy-policy {quote_powershell(path)}"
+            raise PolicyError(
+                "发现旧版尚未恢复的桌宠策略，未修改配置。请在管理员 PowerShell 中运行以下命令，"
+                f"然后重新启动助手：\n{command}"
+            )
 
 
 def is_elevated() -> bool:
@@ -571,12 +584,40 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--attach-only", action="store_true", help="不启动桌宠，只等待已有本地连接")
     parser.add_argument("--check", action="store_true", help="检查本机环境后退出，不启动应用、不领取")
     parser.add_argument("--restore-debug-policy", action="store_true", help="恢复上次异常退出遗留的桌宠调试配置后退出")
+    parser.add_argument("--restore-legacy-policy", type=Path, metavar="PATH", help="恢复指定的旧版策略备份后退出")
     return parser.parse_args(argv)
 
 
 def run(args: argparse.Namespace, stop: threading.Event) -> int:
     if os.name != "nt":
         raise AutoChestError("此脚本仅支持 Windows。")
+    if args.check and args.restore_debug_policy:
+        raise AutoChestError("--check 不能与 --restore-debug-policy 同时使用。")
+    if args.restore_legacy_policy is not None:
+        if args.check or args.restore_debug_policy:
+            raise AutoChestError("旧版策略恢复不能与 --check 或 --restore-debug-policy 同时使用。")
+        legacy_path = args.restore_legacy_policy.absolute()
+        if legacy_path.name.casefold() != POLICY_BACKUP_NAME.casefold():
+            raise PolicyError("旧版策略备份文件名不正确，未进行恢复。")
+        lock = SingleInstance()
+        try:
+            if TemporaryDebugPolicy(args.port, legacy_path).recover_pending():
+                log("已恢复旧版遗留的桌宠调试配置。")
+            else:
+                log("旧版策略没有需要恢复的配置。")
+            return 0
+        finally:
+            lock.close()
+    if args.restore_debug_policy:
+        lock = SingleInstance()
+        try:
+            policy = TemporaryDebugPolicy(args.port, state_root() / POLICY_BACKUP_NAME)
+            if policy.recover_pending():
+                log("已恢复上次异常退出遗留的桌宠调试配置。")
+            log("调试配置恢复检查完成。")
+            return 0
+        finally:
+            lock.close()
     executable = args.exe.resolve()
     if executable.name.casefold() != "wuwatappo.exe" or not executable.is_file():
         raise AutoChestError("未找到 WuwaTappo.exe，请确认其位于 WTHelper 的上一级目录，或使用 --exe 指定路径。")
@@ -601,7 +642,12 @@ def run(args: argparse.Namespace, stop: threading.Event) -> int:
                     client.close()
         return 0
     lock = SingleInstance()
-    policy = TemporaryDebugPolicy(args.port, POLICY_BACKUP)
+    try:
+        check_legacy_policy(args.port, executable)
+    except BaseException:
+        lock.close()
+        raise
+    policy = TemporaryDebugPolicy(args.port, state_root() / POLICY_BACKUP_NAME)
     client: CdpClient | None = None
     controller = ClaimController(log, dry_run=args.dry_run)
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -614,11 +660,6 @@ def run(args: argparse.Namespace, stop: threading.Event) -> int:
     adopted_running_app = False
     announced_wait = False
     try:
-        if args.restore_debug_policy:
-            if policy.recover_pending():
-                log("已恢复上次异常退出遗留的桌宠调试配置。")
-            log("调试配置恢复检查完成。")
-            return 0
         if app_running() and policy.adopt_pending():
             adopted_running_app = True
             launched_at = time.monotonic()
