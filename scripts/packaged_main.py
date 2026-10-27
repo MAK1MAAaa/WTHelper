@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import subprocess
 import sys
@@ -12,6 +11,18 @@ import tkinter as tk
 from scripts import auto_chest, auto_chest_supervisor, gui, save_tool, tap_boost
 from scripts.gui_backend import JobManager
 from scripts.runtime import is_frozen, project_root, worker_command
+
+
+def prepare_standard_streams() -> None:
+    """Keep redirected worker pipes and handle missing streams in windowed builds."""
+    if not is_frozen():
+        return
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        stream = getattr(sys, name)
+        if stream is None:
+            setattr(sys, name, open(os.devnull, mode, encoding="utf-8", errors="replace"))
+        elif hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 class _IdleManager:
@@ -110,13 +121,10 @@ def self_test() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    prepare_standard_streams()
     if args == ["--self-test"]:
         return self_test()
     if args[:1] == ["--worker"]:
-        if is_frozen():
-            for stream in (sys.stdin, sys.stdout, sys.stderr):
-                if stream is not None and hasattr(stream, "reconfigure"):
-                    stream.reconfigure(encoding="utf-8", errors="replace")
         workers = {
             "chest": auto_chest.main,
             "supervisor": auto_chest_supervisor.main,
@@ -128,8 +136,6 @@ def main(argv: list[str] | None = None) -> int:
             print("未知辅助任务。", file=sys.stderr)
             return 2
         return workers[args[1]](args[2:])
-    if os.name == "nt" and getattr(sys, "frozen", False):
-        ctypes.windll.kernel32.FreeConsole()
     return gui.main(args)
 
 

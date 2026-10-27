@@ -31,7 +31,7 @@ WuwaTappo/
     └── WTHelper.exe
 ```
 
-从系统托盘完全退出桌宠，运行 `WTHelper.exe`，再从界面启动需要的功能。发布包内包含独立 EXE，不需要安装 Python；`WTHelper` 目录需要可写，以保存日志、备份及策略恢复记录。运行自动领取和敲击任务需要管理员权限，界面提供提权入口。启动时可能短暂出现命令窗口。
+从系统托盘完全退出桌宠，运行 `WTHelper.exe`，再从界面启动需要的功能。发布包内包含独立 EXE，不需要安装 Python；`WTHelper` 目录需要可写，以保存日志、备份及策略恢复记录。运行自动领取和敲击任务需要管理员权限，界面提供提权入口。
 
 发布文件未经过代码签名，Windows 可能显示未知发布者提示。请仅从本项目的 Releases 页面下载，并核对发布页提供的 SHA-256 值。
 
@@ -156,7 +156,8 @@ py -m compileall -q scripts
 py -m venv .venv-build
 .\.venv-build\Scripts\python.exe -m pip install -r requirements-build.txt
 .\build_release.ps1
-.\dist\WTHelper.exe --self-test
+$testProcess = Start-Process -FilePath .\dist\WTHelper.exe -ArgumentList '--self-test' -WindowStyle Hidden -Wait -PassThru
+if ($testProcess.ExitCode -ne 0) { throw 'EXE 自检失败' }
 ```
 
 输出位于 `dist/WTHelper.exe`。构建环境和产物不会纳入 Git；发布包还包含 [第三方许可文本](licenses/)。

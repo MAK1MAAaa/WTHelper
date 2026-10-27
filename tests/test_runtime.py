@@ -5,10 +5,36 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from scripts import auto_chest, gui, runtime
+from scripts import auto_chest, gui, packaged_main, runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_windowed_build_handles_missing_standard_streams(self) -> None:
+        with patch.object(packaged_main, "is_frozen", return_value=True), \
+             patch.object(sys, "stdin", None), patch.object(sys, "stdout", None), \
+             patch.object(sys, "stderr", None):
+            packaged_main.prepare_standard_streams()
+            streams = (sys.stdin, sys.stdout, sys.stderr)
+            try:
+                self.assertEqual(sys.stdin.read(), "")
+                self.assertEqual(sys.stdout.write("中文"), 2)
+                self.assertEqual(sys.stderr.write("中文"), 2)
+            finally:
+                for stream in streams:
+                    stream.close()
+
+    def test_windowed_build_keeps_redirected_worker_streams(self) -> None:
+        streams = [MagicMock(), MagicMock(), MagicMock()]
+        with patch.object(packaged_main, "is_frozen", return_value=True), \
+             patch.object(sys, "stdin", streams[0]), patch.object(sys, "stdout", streams[1]), \
+             patch.object(sys, "stderr", streams[2]):
+            packaged_main.prepare_standard_streams()
+            self.assertIs(sys.stdin, streams[0])
+            self.assertIs(sys.stdout, streams[1])
+            self.assertIs(sys.stderr, streams[2])
+        for stream in streams:
+            stream.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+
     def test_source_command_preserves_python_interpreter_and_script(self) -> None:
         script = Path("test-dir") / "tap_boost.py"
         self.assertEqual(runtime.worker_command(script, ["--dry-run"], unbuffered=True,

@@ -17,11 +17,11 @@ from typing import TextIO
 if __package__:
     from . import auto_chest as app
     from .tap_boost import stdin_stop_reader
-    from .runtime import project_root, worker_command
+    from .runtime import is_frozen, project_root, worker_command
 else:
     import auto_chest as app
     from tap_boost import stdin_stop_reader
-    from runtime import project_root, worker_command
+    from runtime import is_frozen, project_root, worker_command
 
 
 PROJECT_ROOT = project_root()
@@ -80,9 +80,9 @@ def start_worker(arguments: Sequence[str], *, one_shot: bool = False) -> subproc
     return subprocess.Popen(
         worker_command(WORKER, arguments),
         cwd=PROJECT_ROOT,
-        stdin=None if one_shot else subprocess.PIPE,
-        stdout=None,
-        stderr=None,
+        stdin=(sys.stdin if is_frozen() else None) if one_shot else subprocess.PIPE,
+        stdout=sys.stdout if is_frozen() else None,
+        stderr=sys.stderr if is_frozen() else None,
         text=True,
         encoding="utf-8",
         bufsize=1,

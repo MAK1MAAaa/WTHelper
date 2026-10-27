@@ -210,6 +210,16 @@ class SupervisionTests(unittest.TestCase):
         expected = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.assertEqual(call.kwargs["creationflags"], expected)
 
+    def test_frozen_worker_inherits_output_pipes(self) -> None:
+        for one_shot in (False, True):
+            with self.subTest(one_shot=one_shot), \
+                 patch.object(supervisor, "is_frozen", return_value=True), \
+                 patch.object(supervisor.subprocess, "Popen") as launch:
+                supervisor.start_worker(["--check"], one_shot=one_shot)
+                self.assertIs(launch.call_args.kwargs["stdout"], sys.stdout)
+                self.assertIs(launch.call_args.kwargs["stderr"], sys.stderr)
+                self.assertEqual(launch.call_args.kwargs["stdin"], sys.stdin if one_shot else subprocess.PIPE)
+
     @unittest.skipUnless(os.name == "nt", "Windows process creation flags")
     def test_gui_worker_does_not_open_a_console_window(self) -> None:
         with patch.dict(supervisor.os.environ, {"WUWA_HELPER_NO_CONSOLE": "1"}), \
