@@ -15,7 +15,6 @@ WORKER_NAMES = {
     "auto_chest.py": "chest",
     "auto_chest_supervisor.py": "supervisor",
     "tap_boost.py": "tap",
-    "save_tool.py": "save",
     "selftest_stop.py": "selftest-stop",
 }
 
@@ -28,6 +27,13 @@ def project_root() -> Path:
     if is_frozen():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def state_root() -> Path:
+    """Stable per-user location for state needed to restore Windows settings."""
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    return base / "WTHelper"
 
 
 @contextmanager

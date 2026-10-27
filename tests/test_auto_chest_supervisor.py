@@ -167,6 +167,11 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual(worker.wait_count, 1)
         self.assertEqual(len(self.passed_arguments), 1)
 
+    def test_stop_reports_worker_cleanup_failure(self) -> None:
+        worker = FakeWorker(result=2, on_poll=self.stop.set)
+        self.assertEqual(self.run_fast([worker]), 0)
+        self.assertTrue(any("停止过程中领取子进程异常退出" in message for message in self.messages))
+
     def test_zero_during_backoff_cancels_restart(self) -> None:
         worker = FakeWorker(1)
         def spawn(arguments):

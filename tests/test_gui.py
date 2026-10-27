@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import tkinter as tk
 from tkinter import ttk
 import unittest
@@ -110,16 +111,6 @@ class TapStatusTests(unittest.TestCase):
         self.assertEqual(tap_status_from_line("其他日志信息", "正在发送"), "正在发送")
 
 
-class FakeSavesPage(ttk.Frame):
-    def __init__(self, parent: tk.Misc, *, on_message=None, can_write=None) -> None:
-        super().__init__(parent)
-        self.busy = False
-        self.can_write = can_write
-
-    def is_busy(self) -> bool:
-        return self.busy
-
-
 class FakeJobManager:
     def __init__(self) -> None:
         self.active = {"chest": False, "tap": False}
@@ -160,13 +151,12 @@ class TkControlSmokeTests(unittest.TestCase):
         for target, replacement in (
             ("scripts.gui.auto_chest.is_elevated", True),
             ("scripts.gui.existing_chest_instance", False),
+            ("scripts.gui.load_desktop_path", None),
+            ("scripts.gui.find_desktop_executable", Path("C:/test/WuwaTappo.exe")),
         ):
             patcher = patch(target, return_value=replacement)
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = patch("scripts.gui.create_saves_page", side_effect=FakeSavesPage)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.window = gui.HelperWindow(self.root, manager=self.manager)
         self.window.next_desktop_probe = float("inf")
         self.root.update_idletasks()
@@ -183,7 +173,8 @@ class TkControlSmokeTests(unittest.TestCase):
         self.window.allow_sleep.set(True)
         self.window.chest_preview.set(True)
         self.window.chest_start.invoke()
-        self.assertEqual(self.manager.chest_calls, [{"allow_sleep": True, "dry_run": True}])
+        self.assertEqual(self.manager.chest_calls, [{"allow_sleep": True, "dry_run": True,
+                                                     "exe": Path("C:/test/WuwaTappo.exe")}])
 
         self.window.count.set("25")
         self.window.rate.set("10.5")
@@ -193,13 +184,10 @@ class TkControlSmokeTests(unittest.TestCase):
         self.window.tap_start.invoke()
         self.assertEqual(self.manager.tap_calls, [((25, 10.5, "both"), {"delay": 4.0, "dry_run": True})])
 
-    def test_navigation_switches_page_and_heading(self) -> None:
-        self.window.nav_data.invoke()
-        self.assertEqual(self.window.notebook.index("current"), 1)
-        self.assertEqual(self.window.page_heading.get(), "本地数据")
-        self.window.nav_home.invoke()
-        self.assertEqual(self.window.notebook.index("current"), 0)
-        self.assertEqual(self.window.page_heading.get(), "运行控制")
+    def test_application_has_no_local_data_page(self) -> None:
+        self.assertEqual(len(self.window.notebook.tabs()), 1)
+        self.assertFalse(hasattr(self.window, "saves_page"))
+        self.assertFalse(hasattr(self.window, "log_box"))
 
     def test_process_start_is_not_misreported_as_connected(self) -> None:
         self.window.chest_start.invoke()
@@ -209,6 +197,65 @@ class TkControlSmokeTests(unittest.TestCase):
         self.assertEqual(self.window.chest_status.get(), "启动中")
         self.window._handle_event(gui.JobEvent("chest", "output", "已连接桌宠主页面，开始检查宝箱。"))
         self.assertEqual(self.window.chest_status.get(), "已连接")
+        self.assertEqual(self.window.chest_detail.get(), "已连接，等待宝箱")
+
+    def test_restore_error_is_shown_even_after_user_requests_stop(self) -> None:
+        self.window.stop_requested.add("chest")
+        with patch("scripts.gui.messagebox.showerror") as show_error:
+            self.window._handle_event(gui.JobEvent("chest", "output", "自动领取已停止：旧策略未恢复，请在 PowerShell 中运行："))
+            self.window._handle_event(gui.JobEvent("chest", "output", "& 'WTHelper.exe' --restore-legacy-policy 'old.json'"))
+            self.window._handle_event(gui.JobEvent("chest", "finished", returncode=0))
+        show_error.assert_called_once()
+        self.assertIn("旧策略未恢复", show_error.call_args.args[1])
+        self.assertIn("--restore-legacy-policy", show_error.call_args.args[1])
+        self.assertEqual(self.window.chest_status.get(), "异常")
+
+    def test_supervisor_cleanup_failure_is_shown_after_stop(self) -> None:
+        self.window.stop_requested.add("chest")
+        with patch("scripts.gui.messagebox.showerror") as show_error:
+            self.window._handle_event(gui.JobEvent("chest", "output", "停止过程中领取子进程异常退出（退出码 2），无法确认配置已恢复。"))
+            self.window._handle_event(gui.JobEvent("chest", "finished", returncode=0))
+        show_error.assert_called_once()
+        self.assertIn("无法确认配置已恢复", show_error.call_args.args[1])
+
+    def test_abnormal_worker_exit_is_visible_without_a_log_panel(self) -> None:
+        with patch("scripts.gui.messagebox.showerror") as show_error:
+            self.window._handle_event(gui.JobEvent("tap", "finished", returncode=1))
+        show_error.assert_called_once()
+        self.assertEqual(self.window.tap_status.get(), "异常")
+
+    def test_unexpected_exit_after_stop_is_not_reported_as_success(self) -> None:
+        self.window.stop_requested.add("chest")
+        with patch("scripts.gui.messagebox.showerror") as show_error:
+            self.window._handle_event(gui.JobEvent("chest", "finished", returncode=1))
+        show_error.assert_called_once()
+        self.assertEqual(self.window.chest_status.get(), "异常")
+
+    def test_sleep_prevention_failure_warns_only_once(self) -> None:
+        with patch("scripts.gui.messagebox.showwarning") as warning:
+            self.window._handle_event(gui.JobEvent("chest", "started", pid=123))
+            self.window._handle_event(gui.JobEvent("chest", "output", "无法阻止系统自动睡眠，请检查 Windows 电源设置。"))
+            self.window._handle_event(gui.JobEvent("chest", "output", "无法阻止系统自动睡眠，请检查 Windows 电源设置。"))
+        warning.assert_called_once()
+
+    def test_retry_limit_preserves_the_original_failure(self) -> None:
+        with patch("scripts.gui.messagebox.showerror") as error:
+            self.window._handle_event(gui.JobEvent("chest", "output", "自动领取已停止：具体失败原因"))
+            self.window._handle_event(gui.JobEvent("chest", "output", "领取子进程异常退出；重启已达上限"))
+            self.window._handle_event(gui.JobEvent("chest", "finished", returncode=1))
+        self.assertIn("具体失败原因", error.call_args.args[1])
+
+    def test_close_drains_pending_errors_before_destroy(self) -> None:
+        self.window.closing = True
+        events = [gui.JobEvent("chest", "output", "自动领取已停止：恢复配置失败"),
+                  gui.JobEvent("chest", "finished", returncode=0)]
+        with patch.object(self.manager, "poll_events", side_effect=[[], events]), \
+             patch.object(self.root, "destroy") as destroy, patch.object(self.root, "after"), \
+             patch("scripts.gui.messagebox.showerror") as error:
+            self.window._poll()
+        error.assert_called_once()
+        self.assertIn("恢复配置失败", error.call_args.args[1])
+        destroy.assert_not_called()
 
     def test_close_requests_stop_then_waits_until_job_is_inactive(self) -> None:
         self.manager.active["chest"] = True
@@ -229,22 +276,39 @@ class TkControlSmokeTests(unittest.TestCase):
         self.assertEqual(self.manager.chest_calls, [])
         error.assert_called_once()
 
-    def test_local_write_blocks_both_job_start_buttons(self) -> None:
-        self.window.saves_page.busy = True
-        with patch("scripts.gui.messagebox.showinfo") as info:
-            self.window.chest_start.invoke()
-            self.window.tap_start.invoke()
-        self.assertEqual(self.manager.chest_calls, [])
-        self.assertEqual(self.manager.tap_calls, [])
-        self.assertEqual(info.call_count, 2)
+    def test_manual_desktop_selection_is_remembered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "WuwaTappo.exe"
+            executable.touch()
+            with patch("scripts.gui.filedialog.askopenfilename", return_value=str(executable)), \
+                 patch("scripts.gui.save_desktop_path") as save:
+                self.assertEqual(self.window.choose_desktop(), executable.resolve())
+            self.assertEqual(self.window.desktop_executable, executable.resolve())
+            save.assert_called_once_with(executable.resolve())
 
-    def test_write_gate_blocks_background_jobs_and_external_chest_instance(self) -> None:
-        self.assertTrue(self.window.saves_page.can_write())
-        self.manager.active["tap"] = True
-        self.assertFalse(self.window.saves_page.can_write())
-        self.manager.active["tap"] = False
-        with patch("scripts.gui.existing_chest_instance", return_value=True):
-            self.assertFalse(self.window.saves_page.can_write())
+    def test_missing_desktop_prompts_user_and_does_not_start_when_cancelled(self) -> None:
+        with patch("scripts.gui.find_desktop_executable", return_value=None), \
+             patch("scripts.gui.filedialog.askopenfilename", return_value=""), \
+             patch("scripts.gui.messagebox.showinfo") as info:
+            self.window.chest_start.invoke()
+        self.assertEqual(self.manager.chest_calls, [])
+        info.assert_called_once()
+
+    def test_multiple_desktops_require_an_explicit_selection(self) -> None:
+        candidates = [Path("C:/first/WuwaTappo.exe"), Path("C:/second/WuwaTappo.exe")]
+        with patch("scripts.gui.find_desktop_executable", side_effect=gui.AmbiguousDesktopError(candidates)), \
+             patch.object(self.window, "choose_desktop", return_value=candidates[1]) as choose, \
+             patch("scripts.gui.messagebox.showinfo"):
+            self.window.chest_start.invoke()
+        choose.assert_called_once()
+        self.assertEqual(self.manager.chest_calls[0]["exe"], candidates[1])
+
+    def test_desktop_selection_cannot_change_while_chest_running(self) -> None:
+        self.manager.active["chest"] = True
+        with patch("scripts.gui.filedialog.askopenfilename") as dialog, \
+             patch("scripts.gui.messagebox.showinfo"):
+            self.assertIsNone(self.window.choose_desktop())
+        dialog.assert_not_called()
 
     def test_mouse_mode_requires_three_seconds_except_in_preview(self) -> None:
         self.window.mode.set("鼠标左键")
@@ -276,7 +340,7 @@ class TkControlSmokeTests(unittest.TestCase):
 
     def test_minimum_window_keeps_mouse_mode_controls_visible(self) -> None:
         self.root.attributes("-alpha", 0.0)
-        self.root.geometry("860x600")
+        self.root.geometry("860x440")
         self.root.deiconify()
         self.window.mode.set("鼠标左键")
         self.root.update()

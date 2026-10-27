@@ -4,7 +4,7 @@ import tkinter as tk
 from types import SimpleNamespace
 import unittest
 
-from scripts.gui_theme import RoundedButton
+from scripts.gui_theme import PAPER, PANEL, RoundedButton, RoundedPanel, _button_surface
 
 
 class RoundedButtonTests(unittest.TestCase):
@@ -38,10 +38,42 @@ class RoundedButtonTests(unittest.TestCase):
         self.button._key(SimpleNamespace())
         self.assertEqual(self.calls, ["执行"])
 
-    def test_button_outline_has_a_real_round_corner(self) -> None:
-        shape = self.button.find_all()[0]
-        points = self.button.coords(shape)
-        width = self.button.winfo_width()
-        self.assertAlmostEqual(points[0], width - 17, places=3)
-        self.assertAlmostEqual(points[1], 1, places=3)
-        self.assertTrue(any(abs(x - 1) < 0.001 for x in points[::2]))
+    def test_button_corners_have_antialiased_pixels(self) -> None:
+        image = self.button._surface_image
+        self.assertIsNotNone(image)
+        background = image.get(0, 0)
+        fill = image.get(24, 12)
+        pixels = {image.get(x, y) for x in range(20) for y in range(12)}
+        self.assertIn(background, pixels)
+        self.assertIn(fill, pixels)
+        self.assertGreater(len(pixels), 3)
+
+    def test_unchanged_state_reuses_image_and_cached_surface(self) -> None:
+        image = self.button._surface_image
+        self.button._draw()
+        self.assertIs(self.button._surface_image, image)
+        self.assertLessEqual(_button_surface.cache_info().maxsize, 128)
+        self.button.configure(state="disabled")
+        self.assertIsNot(self.button._surface_image, image)
+
+    def test_corner_background_matches_parent(self) -> None:
+        parent = tk.Frame(self.root, background="#f6e9f1")
+        parent.pack()
+        button = RoundedButton(parent, text="测试", command=lambda: None)
+        button.pack()
+        self.root.update()
+        self.assertEqual(button._surface_image.get(0, 0), (246, 233, 241))
+
+    def test_panel_corners_blend_directly_into_background(self) -> None:
+        panel = RoundedPanel(self.root, height=100)
+        panel.pack(fill="both", expand=True)
+        self.root.geometry("300x200")
+        self.root.update()
+        corner = panel._corners[0]
+        expected_background = tuple(channel // 257 for channel in self.root.winfo_rgb(PAPER))
+        expected_fill = tuple(channel // 257 for channel in self.root.winfo_rgb(PANEL))
+        self.assertEqual(corner.get(0, 0), expected_background)
+        self.assertEqual(corner.get(19, 19), expected_fill)
+        self.assertGreater(len({corner.get(x, y) for x in range(20) for y in range(20)}), 2)
+        self.assertEqual(panel.coords(panel._corner_items[2]),
+                         [float(panel.winfo_width() - 20), float(panel.winfo_height() - 20)])

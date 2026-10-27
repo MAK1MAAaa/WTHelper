@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Sequence
-import logging
-from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import subprocess
@@ -26,31 +24,16 @@ else:
 
 PROJECT_ROOT = project_root()
 WORKER = PROJECT_ROOT / "scripts" / "auto_chest.py"
-SUPERVISOR_LOG_PATH = PROJECT_ROOT / "logs" / "auto_chest_supervisor.log"
-LOGGER = logging.getLogger("wuwatappo.auto_chest.supervisor")
-LOGGER.propagate = False
-ONE_SHOT_OPTIONS = frozenset(("--check", "--restore-debug-policy", "--help", "-h"))
+ONE_SHOT_OPTIONS = frozenset(("--check", "--restore-debug-policy", "--restore-legacy-policy", "--help", "-h"))
 INTERRUPTED_EXIT_CODES = frozenset((130, -2, 0xC000013A))
 
 
 def configure_file_logging() -> None:
-    if LOGGER.handlers:
-        return
-    try:
-        SUPERVISOR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(
-            SUPERVISOR_LOG_PATH, maxBytes=1_048_576, backupCount=2, encoding="utf-8"
-        )
-        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-        LOGGER.addHandler(handler)
-        LOGGER.setLevel(logging.INFO)
-    except OSError:
-        print("监督进程日志无法写入，将仅在 CMD 中显示状态。", flush=True)
+    """Compatibility hook: supervision reports progress through stdout only."""
 
 
 def log(message: str) -> None:
     app.log(f"监督进程：{message}")
-    LOGGER.info(message)
 
 
 class RestartPolicy:
@@ -115,11 +98,12 @@ def close_stdin(worker: subprocess.Popen[str]) -> None:
             pass
 
 
-def stop_worker(worker: subprocess.Popen[str], emit: Callable[[str], None] = log) -> None:
+def stop_worker(worker: subprocess.Popen[str], emit: Callable[[str], None] = log) -> int:
     """Ask the worker to stop and wait for its own cleanup; never force-kill it."""
-    if worker.poll() is not None:
+    result = worker.poll()
+    if result is not None:
         close_stdin(worker)
-        return
+        return result
     emit("正在停止领取，等待子进程恢复配置。")
     try:
         if worker.stdin is not None:
@@ -130,7 +114,7 @@ def stop_worker(worker: subprocess.Popen[str], emit: Callable[[str], None] = log
     next_notice = time.monotonic() + 30
     while True:
         try:
-            worker.wait(timeout=1)
+            result = worker.wait(timeout=1)
             break
         except subprocess.TimeoutExpired:
             now = time.monotonic()
@@ -140,6 +124,7 @@ def stop_worker(worker: subprocess.Popen[str], emit: Callable[[str], None] = log
         except KeyboardInterrupt:
             emit("已收到停止请求，继续等待子进程清理。")
     close_stdin(worker)
+    return result
 
 
 def run_one_shot(arguments: Sequence[str]) -> int:
@@ -194,7 +179,7 @@ def supervise(
                     report("领取子进程已正常退出。")
                     return 0
                 if result == 2:
-                    report("领取子进程遇到配置或实例冲突，已停止，请查看上方日志。")
+                    report("领取子进程遇到配置或实例冲突，已停止。")
                     return 2
                 if result in INTERRUPTED_EXIT_CODES:
                     report("领取子进程收到中断，停止监督。")
@@ -202,7 +187,7 @@ def supervise(
                 failure = f"领取子进程异常退出，退出码 {result}"
             delay = restart_policy.next_delay(now())
             if delay is None:
-                report(f"{failure}；10 分钟内重启已达上限，请查看日志并手动重试。")
+                report(f"{failure}；10 分钟内重启已达上限，请检查桌宠状态后手动重试。")
                 return 1
             report(f"{failure}；{delay:g} 秒后自动重启。")
             if stop.wait(delay):
@@ -218,7 +203,9 @@ def supervise(
     finally:
         stop.set()
         if worker is not None:
-            stop_worker(worker, report)
+            result = stop_worker(worker, report)
+            if result != 0 and result not in INTERRUPTED_EXIT_CODES:
+                report(f"停止过程中领取子进程异常退出（退出码 {result}），无法确认配置已恢复。")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
