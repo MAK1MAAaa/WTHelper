@@ -16,8 +16,10 @@ from typing import TextIO
 
 if __package__:
     from . import auto_chest as app
+    from .tap_boost import stdin_stop_reader
 else:
     import auto_chest as app
+    from tap_boost import stdin_stop_reader
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +73,8 @@ class RestartPolicy:
 
 def start_worker(arguments: Sequence[str], *, one_shot: bool = False) -> subprocess.Popen[str]:
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" and not one_shot else 0
+    if os.name == "nt" and os.environ.get("WUWA_HELPER_NO_CONSOLE") == "1":
+        creationflags |= subprocess.CREATE_NO_WINDOW
     return subprocess.Popen(
         [sys.executable, str(WORKER), *arguments],
         cwd=PROJECT_ROOT,
@@ -98,11 +102,7 @@ def stop_reader(stop: threading.Event, stream: TextIO | None = None) -> None:
                 stop.set()
                 return
     else:
-        for line in source:
-            if line.strip() == "0":
-                stop.set()
-                return
-        stop.set()
+        stdin_stop_reader(stop, source)
 
 
 def close_stdin(worker: subprocess.Popen[str]) -> None:
@@ -191,6 +191,9 @@ def supervise(
                 if result == 0:
                     report("领取子进程已正常退出。")
                     return 0
+                if result == 2:
+                    report("领取子进程遇到配置或实例冲突，已停止，请查看上方日志。")
+                    return 2
                 if result in INTERRUPTED_EXIT_CODES:
                     report("领取子进程收到中断，停止监督。")
                     return 130

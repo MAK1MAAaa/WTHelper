@@ -9,6 +9,7 @@ WuwaTappo/
 ├── WuwaTappo.exe
 ├── uninstall.exe
 └── WTHelper/
+    ├── WTHelper.cmd
     ├── auto_chest.cmd
     ├── tap_boost.cmd
     ├── scripts/
@@ -19,6 +20,20 @@ WuwaTappo/
 ```
 
 自动领取脚本默认从 `WTHelper` 上一级目录查找 `WuwaTappo.exe`，可通过 `--exe` 指定其他路径。以下 PowerShell 命令均在 `WTHelper` 文件夹内运行。`scripts.zip` 是整理前的历史快照，其中的旧路径不会自动更新；请使用当前文件夹中的脚本。备份、日志、Python 缓存及历史压缩包不纳入 Git 提交。
+
+## 图形界面
+
+双击 `WTHelper.cmd` 打开桌宠助手。启动器会请求管理员权限；如果取消请求，界面仍可打开，可通过左侧 **“以管理员身份运行”** 重新启动。自动领取和刷数应使用管理员权限，以匹配本机桌宠的权限。
+
+窗口默认为紧凑尺寸，采用统一的灰绿配色和圆角控件。可通过左侧切换运行控制和本地数据；运行控制页集中显示宝箱、敲击计划及运行记录，本地数据页提供计数查看、预览、写入和备份恢复。
+
+- **运行控制**：分别启动、停止自动领取和敲击计数；可设置输入模式、轮数、速率和启动延迟。两个功能均提供只检查、不实际执行的预览模式，运行输出显示在窗口中。
+- **本地数据**：查看本地计数，预览并设置待上报增量或累计快照，也可选择备份目录预览并恢复。填写的是目标值；两个字段含义不同，同时设置可能使合并后的总数超出预期。实际写入前需先停止自动领取和刷数，并从托盘完全退出桌宠；工具会先备份再写入。
+- **关闭窗口**：会请求停止由该窗口启动的任务，等待它们完成清理及正在执行的本地数据操作后关闭。独立运行的 CMD 任务需要在对应窗口中停止。
+
+自动领取调用桌宠内部按钮，不移动鼠标。敲击计数的鼠标模式会在当前光标位置执行真实左键点击；正式启动该模式时至少保留 3 秒延迟，以便将光标移到安全位置。键盘模式默认发送 F24。
+
+界面使用 Python 自带的 Tkinter，不需要额外安装 Python 包。也可在 `WTHelper` 中执行 `py .\scripts\gui.py`；普通权限窗口左侧提供管理员启动入口。原有 CMD 启动器及命令行参数仍可使用。
 
 ## 自动领取宝箱：CMD 常驻，输入 0 退出
 
@@ -174,12 +189,12 @@ dd340c92a7320d1ecf3697ba65b4ad23d8f196acb547d2baf3f75ba09d696d97
 
 ```powershell
 py -m unittest discover -s tests -v
-py -m py_compile .\scripts\tap_boost.py .\scripts\save_tool.py .\scripts\auto_chest.py .\scripts\auto_chest_supervisor.py .\scripts\cdp_client.py .\scripts\chest_log.py .\scripts\webview_policy.py
+py -m py_compile .\scripts\tap_boost.py .\scripts\save_tool.py .\scripts\auto_chest.py .\scripts\auto_chest_supervisor.py .\scripts\cdp_client.py .\scripts\chest_log.py .\scripts\webview_policy.py .\scripts\gui.py .\scripts\gui_backend.py .\scripts\gui_saves.py .\scripts\gui_layout.py .\scripts\gui_theme.py
 ```
 
 离线测试覆盖计数备份恢复、输入停止与释放、本地 WebSocket 协议、领取串行处理、登录/余额/隐藏状态保护、失败退避和 DOM 状态复核。页面脚本的模拟 DOM 测试使用 Node.js，仅开发验证需要，实际运行工具不需要 Node.js。
 
-已通过 97 项离线测试、Python 编译检查、自动领取的只读诊断，并在真实终端验证旧版预览常驻模式按 0 正常退出。测试覆盖服务器冷却码读取、就绪缓冲、心跳、防睡眠请求、监督重启、管理员启动策略恢复与外部变更保护。注册表测试全部使用模拟后端；防自动睡眠请求已在本机验证能够设置并释放。
+离线测试覆盖服务器冷却码读取、就绪缓冲、心跳、防睡眠请求、监督重启、管理员启动策略恢复、图形界面的输入校验、任务停止和存档预览门禁。注册表测试全部使用模拟后端；防自动睡眠请求已在本机验证能够设置并释放。图形界面刷数停止已通过真实子进程管道验证：在倒计时期间停止，未发送键鼠事件。
 
 2026-10-27 修复后，实际运行日志确认：03:25:04 左侧领取成功，03:25:09 右侧领取成功，共两枚，随后进入等待下一轮状态。只读复核确认本地连接已建立、已登录，领取后的左右按钮均不可点击。
 

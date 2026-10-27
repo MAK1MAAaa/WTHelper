@@ -168,7 +168,7 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual(len(self.passed_arguments), 1)
 
     def test_zero_during_backoff_cancels_restart(self) -> None:
-        worker = FakeWorker(2)
+        worker = FakeWorker(1)
         def spawn(arguments):
             self.passed_arguments.append(list(arguments))
             return worker
@@ -179,6 +179,12 @@ class SupervisionTests(unittest.TestCase):
             result = supervisor.supervise([], self.stop, spawn=spawn, emit=self.messages.append)
         self.assertEqual(result, 0)
         self.assertEqual(len(self.passed_arguments), 1)
+
+    def test_configuration_error_does_not_restart(self) -> None:
+        worker = FakeWorker(2)
+        self.assertEqual(self.run_fast([worker]), 2)
+        self.assertEqual(len(self.passed_arguments), 1)
+        self.assertTrue(any("配置或实例冲突" in message for message in self.messages))
 
     def test_one_shot_commands_do_not_start_supervisor_or_restart(self) -> None:
         for option in ("--check", "--restore-debug-policy", "--help", "-h"):
@@ -192,7 +198,8 @@ class SupervisionTests(unittest.TestCase):
                 self.assertEqual(worker.wait_count, 1)
 
     def test_worker_uses_pipe_and_separate_windows_process_group(self) -> None:
-        with patch.object(supervisor.subprocess, "Popen") as launch:
+        with patch.dict(supervisor.os.environ, {"WUWA_HELPER_NO_CONSOLE": "0"}), \
+             patch.object(supervisor.subprocess, "Popen") as launch:
             supervisor.start_worker(["--dry-run"])
         call = launch.call_args
         self.assertEqual(call.args[0], [sys.executable, str(supervisor.WORKER), "--dry-run"])
@@ -202,6 +209,15 @@ class SupervisionTests(unittest.TestCase):
         self.assertIsNone(call.kwargs["stderr"])
         expected = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.assertEqual(call.kwargs["creationflags"], expected)
+
+    @unittest.skipUnless(os.name == "nt", "Windows process creation flags")
+    def test_gui_worker_does_not_open_a_console_window(self) -> None:
+        with patch.dict(supervisor.os.environ, {"WUWA_HELPER_NO_CONSOLE": "1"}), \
+             patch.object(supervisor.subprocess, "Popen") as launch:
+            supervisor.start_worker([])
+        flags = launch.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & subprocess.CREATE_NO_WINDOW)
+        self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
 
     def test_one_shot_interrupt_waits_for_child_cleanup(self) -> None:
         worker = FakeWorker()

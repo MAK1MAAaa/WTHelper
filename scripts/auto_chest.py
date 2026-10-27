@@ -727,7 +727,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         stop.set()
         log("已由 Ctrl+C 停止自动领取。桌宠继续运行。")
         return 130
-    except (AutoChestError, CdpError, PolicyError, OSError, subprocess.SubprocessError, ValueError) as error:
+    except (AutoChestError, PolicyError, ValueError) as error:
+        log(f"自动领取已停止：{error}")
+        return 2
+    except (CdpError, OSError, subprocess.SubprocessError) as error:
         log(f"自动领取已停止：{error}")
         return 1
     finally:

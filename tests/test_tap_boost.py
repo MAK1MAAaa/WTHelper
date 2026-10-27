@@ -5,6 +5,10 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import importlib.util
 import io
+import os
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import cast
 import unittest
@@ -109,6 +113,58 @@ class TapBoostTests(unittest.TestCase):
         api = FakeWindowsInput(running=False)
         self.assertEqual(self.run_fake(api, "--dry-run", "--mode", "both"), 0)
         self.assertEqual(api.attempts, [])
+
+    def test_stdin_stop_and_eof_set_stop_event(self) -> None:
+        for text in ("anything\n0\n", ""):
+            stop = threading.Event()
+            tap_boost.stdin_stop_reader(stop, io.StringIO(text))
+            self.assertTrue(stop.is_set())
+
+    def test_stop_during_countdown_sends_no_events(self) -> None:
+        api = FakeWindowsInput()
+        stop = threading.Event()
+        stop.set()
+        args = tap_boost.parse_args(["--count", "10", "--delay", "5", "--stdin-stop"])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(tap_boost.run(args, cast(tap_boost.WindowsInput, api), stop), 130)
+        self.assertEqual(api.attempts, [])
+
+    def test_stop_after_a_batch_does_not_send_additional_events(self) -> None:
+        stop = threading.Event()
+        class StopAfterFirstBatch(FakeWindowsInput):
+            def send(self, events: list[tap_boost.Input]) -> None:
+                super().send(events)
+                stop.set()
+        api = StopAfterFirstBatch()
+        args = tap_boost.parse_args(["--count", "100", "--rate", "1000", "--delay", "0", "--mode", "both", "--stdin-stop"])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(tap_boost.run(args, cast(tap_boost.WindowsInput, api), stop), 130)
+        self.assertEqual(len(api.attempts), 1)
+        self.assertEqual(len(api.attempts[0]) % 4, 0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows pipe handling")
+    def test_pipe_reader_exits_when_task_finishes_with_parent_stdin_still_open(self) -> None:
+        code = (
+            "import sys,threading,time; "
+            f"sys.path.insert(0,{str(MODULE_PATH.parent)!r}); "
+            "from tap_boost import stdin_stop_reader; "
+            "stop=threading.Event(); "
+            "reader=threading.Thread(target=stdin_stop_reader,args=(stop,sys.stdin),daemon=True); "
+            "reader.start(); time.sleep(0.1); stop.set(); reader.join(1); "
+            "sys.exit(1 if reader.is_alive() else 0)"
+        )
+        process = subprocess.Popen([sys.executable, "-u", "-c", code], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            self.assertEqual(process.wait(timeout=4), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=4)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 if __name__ == "__main__":

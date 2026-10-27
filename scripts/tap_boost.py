@@ -8,8 +8,10 @@ from ctypes import wintypes
 import math
 import os
 import sys
+import threading
 import time
 from collections.abc import Sequence
+from typing import TextIO
 
 
 MAX_COUNT = 1_000_000
@@ -199,12 +201,62 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mode", choices=("keyboard", "mouse", "both"), default="keyboard")
     parser.add_argument("--delay", type=bounded_delay, default=5.0, help="启动倒计时秒数，默认 5")
     parser.add_argument("--dry-run", action="store_true", help="只验证参数、结构和进程，不发送输入")
+    parser.add_argument("--stdin-stop", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
-def wait_until(api: WindowsInput, deadline: float) -> bool:
+def stdin_stop_reader(stop: threading.Event, stream: TextIO) -> None:
+    """Read stop commands without leaving a blocked pipe reader at shutdown."""
+    if os.name == "nt":
+        import msvcrt
+        try:
+            descriptor = stream.fileno()
+            handle = msvcrt.get_osfhandle(descriptor)
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GetFileType.argtypes = [wintypes.HANDLE]
+            kernel.GetFileType.restype = wintypes.DWORD
+            if kernel.GetFileType(handle) == 3:
+                peek = kernel.PeekNamedPipe
+                peek.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                 ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+                peek.restype = wintypes.BOOL
+                pending = bytearray()
+                while not stop.wait(0.05):
+                    available = wintypes.DWORD()
+                    if not peek(handle, None, 0, None, ctypes.byref(available), None):
+                        stop.set()
+                        return
+                    if not available.value:
+                        continue
+                    chunk = os.read(descriptor, min(available.value, 4096))
+                    if not chunk:
+                        stop.set()
+                        return
+                    pending.extend(chunk)
+                    while b"\n" in pending:
+                        line, _, remainder = pending.partition(b"\n")
+                        pending = bytearray(remainder)
+                        if line.strip() == b"0":
+                            stop.set()
+                            return
+                    if len(pending) > 4096:
+                        pending.clear()
+                return
+        except (AttributeError, OSError, ValueError):
+            pass
+    try:
+        for line in stream:
+            if line.strip() == "0":
+                stop.set()
+                return
+    except (OSError, ValueError):
+        pass
+    stop.set()
+
+
+def wait_until(api: WindowsInput, deadline: float, stop: threading.Event | None = None) -> bool:
     while True:
-        if api.escape_pressed():
+        if (stop is not None and stop.is_set()) or api.escape_pressed():
             return False
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
@@ -212,7 +264,7 @@ def wait_until(api: WindowsInput, deadline: float) -> bool:
         time.sleep(min(remaining, 0.02))
 
 
-def run(args: argparse.Namespace, api: WindowsInput) -> int:
+def run(args: argparse.Namespace, api: WindowsInput, stop: threading.Event | None = None) -> int:
     running = api.app_running()
     events = cycle_events(args.mode)
     per_cycle = 2 if args.mode == "both" else 1
@@ -237,7 +289,7 @@ def run(args: argparse.Namespace, api: WindowsInput) -> int:
         if remaining != previous_second:
             print(f"{remaining} 秒后开始。", flush=True)
             previous_second = remaining
-        if not wait_until(api, min(countdown_end, time.perf_counter() + 0.1)):
+        if not wait_until(api, min(countdown_end, time.perf_counter() + 0.1), stop):
             print("已取消，未发送输入。")
             return 130
 
@@ -254,8 +306,8 @@ def run(args: argparse.Namespace, api: WindowsInput) -> int:
                 if not api.app_running():
                     raise RuntimeError("桌宠已退出，停止发送。")
                 next_process_check = now + 1.0
-            if not wait_until(api, next_batch_at):
-                print("收到 ESC，已停止。", flush=True)
+            if not wait_until(api, next_batch_at, stop):
+                print("收到停止请求，已停止。", flush=True)
                 return 130
             batch = min(batch_limit, args.count - sent_cycles)
             send_started = time.perf_counter()
@@ -281,14 +333,23 @@ def run(args: argparse.Namespace, api: WindowsInput) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    stop = threading.Event()
+    reader: threading.Thread | None = None
+    if args.stdin_stop and not args.dry_run:
+        reader = threading.Thread(target=stdin_stop_reader, args=(stop, sys.stdin), daemon=True)
+        reader.start()
     try:
-        return run(args, WindowsInput())
+        return run(args, WindowsInput(), stop)
     except KeyboardInterrupt:
         print("已由 Ctrl+C 停止。", file=sys.stderr)
         return 130
     except (OSError, RuntimeError) as error:
         print(f"错误: {error}", file=sys.stderr)
         return 1
+    finally:
+        stop.set()
+        if reader is not None:
+            reader.join(timeout=0.3)
 
 
 if __name__ == "__main__":
