@@ -23,14 +23,16 @@ if __package__:
     from .gui_backend import BackendError, JobEvent, JobManager
     from .gui_layout import build_layout, configure_styles
     from .gui_saves import create_saves_page
+    from .runtime import is_frozen, project_root
 else:
     import auto_chest
     from gui_backend import BackendError, JobEvent, JobManager
     from gui_layout import build_layout, configure_styles
     from gui_saves import create_saves_page
+    from runtime import is_frozen, project_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = project_root()
 MODE_LABELS = {
     "键盘（F24）": "keyboard",
     "鼠标左键": "mouse",
@@ -132,8 +134,19 @@ def request_elevation() -> bool:
     shell.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
     shell.ShellExecuteW.restype = ctypes.c_void_p
-    parameters = subprocess.list2cmdline([str(Path(__file__).resolve())])
-    result = shell.ShellExecuteW(None, "runas", sys.executable, parameters, str(PROJECT_ROOT), 1)
+    frozen = is_frozen()
+    parameters = None if frozen else subprocess.list2cmdline([str(Path(__file__).resolve())])
+    previous_reset = os.environ.get("PYINSTALLER_RESET_ENVIRONMENT")
+    if frozen:
+        os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    try:
+        result = shell.ShellExecuteW(None, "runas", sys.executable, parameters, str(PROJECT_ROOT), 1)
+    finally:
+        if frozen:
+            if previous_reset is None:
+                os.environ.pop("PYINSTALLER_RESET_ENVIRONMENT", None)
+            else:
+                os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = previous_reset
     return bool(result and result > 32)
 
 

@@ -30,13 +30,15 @@ if __package__:
     from .cdp_client import CdpClient, CdpError
     from .chest_log import ChestErrorTail
     from .webview_policy import PolicyError, TemporaryDebugPolicy
+    from .runtime import external_dll_search, project_root
 else:
     from cdp_client import CdpClient, CdpError
     from chest_log import ChestErrorTail
     from webview_policy import PolicyError, TemporaryDebugPolicy
+    from runtime import external_dll_search, project_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = project_root()
 DEFAULT_EXECUTABLE = PROJECT_ROOT.parent / "WuwaTappo.exe"
 DEFAULT_PORT = 19227
 MIN_BALANCE = 1_000
@@ -489,10 +491,11 @@ def launch_app(executable: Path, port: int) -> subprocess.Popen[bytes]:
         arguments + f" --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"
     ).strip()
     try:
-        return subprocess.Popen(
-            [str(executable)], cwd=executable.parent, env=environment,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        with external_dll_search():
+            return subprocess.Popen(
+                [str(executable)], cwd=executable.parent, env=environment,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     except OSError as error:
         if getattr(error, "winerror", None) == 740:
             raise AutoChestError(

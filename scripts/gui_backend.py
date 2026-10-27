@@ -12,11 +12,16 @@ import sys
 import threading
 from typing import Literal, Sequence
 
+if __package__:
+    from .runtime import is_frozen, project_root, worker_command
+else:
+    from runtime import is_frozen, project_root, worker_command
+
 
 JobName = Literal["chest", "tap"]
 EventKind = Literal["started", "output", "stopping", "finished"]
 SCRIPTS_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPTS_DIR.parent
+PROJECT_ROOT = project_root()
 MAX_EVENTS = 2048
 MAX_LINE_LENGTH = 8192
 
@@ -136,7 +141,7 @@ class JobManager:
 
     def _start(self, job: JobName, filename: str, arguments: Sequence[str]) -> int:
         script = self._scripts_dir / filename
-        if not script.is_file():
+        if not is_frozen() and not script.is_file():
             raise BackendError(f"未找到辅助脚本：{filename}")
         with self._lock:
             if job in self._jobs:
@@ -148,8 +153,8 @@ class JobManager:
                 environment["WUWA_HELPER_NO_CONSOLE"] = "1"
             try:
                 process = subprocess.Popen(
-                    [console_python(), "-u", str(script), *arguments],
-                    cwd=str(self._scripts_dir.parent),
+                    worker_command(script, arguments, unbuffered=True, executable=console_python()),
+                    cwd=str(PROJECT_ROOT if is_frozen() else self._scripts_dir.parent),
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace", bufsize=1,
                     env=environment,

@@ -16,13 +16,15 @@ from typing import Literal
 
 if __package__:
     from .gui_backend import console_python
+    from .runtime import project_root, worker_command
     from .gui_theme import FIELD, GREEN, GREEN_PALE, INK, LINE, MUTED, PANEL, PAPER, RoundedButton, RoundedPanel
 else:
     from gui_backend import console_python
+    from runtime import project_root, worker_command
     from gui_theme import FIELD, GREEN, GREEN_PALE, INK, LINE, MUTED, PANEL, PAPER, RoundedButton, RoundedPanel
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = project_root()
 SAVE_TOOL = PROJECT_ROOT / "scripts" / "save_tool.py"
 MAX_COUNT = (1 << 53) - 1
 MAX_OUTPUT_CHARS = 12_000
@@ -81,7 +83,7 @@ def make_restore_operation(directory: str) -> SaveOperation:
 
 
 def build_command(operation: SaveOperation, *, apply: bool = False) -> list[str]:
-    command = [console_python(), "-u", str(SAVE_TOOL), operation.kind]
+    command = worker_command(SAVE_TOOL, [operation.kind], unbuffered=True, executable=console_python())
     if operation.kind == "status":
         if apply or operation.pending is not None or operation.total is not None or operation.backup is not None:
             raise InputError("状态查询不支持写入参数。")

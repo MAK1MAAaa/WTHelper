@@ -17,12 +17,14 @@ from typing import TextIO
 if __package__:
     from . import auto_chest as app
     from .tap_boost import stdin_stop_reader
+    from .runtime import project_root, worker_command
 else:
     import auto_chest as app
     from tap_boost import stdin_stop_reader
+    from runtime import project_root, worker_command
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = project_root()
 WORKER = PROJECT_ROOT / "scripts" / "auto_chest.py"
 SUPERVISOR_LOG_PATH = PROJECT_ROOT / "logs" / "auto_chest_supervisor.log"
 LOGGER = logging.getLogger("wuwatappo.auto_chest.supervisor")
@@ -76,7 +78,7 @@ def start_worker(arguments: Sequence[str], *, one_shot: bool = False) -> subproc
     if os.name == "nt" and os.environ.get("WUWA_HELPER_NO_CONSOLE") == "1":
         creationflags |= subprocess.CREATE_NO_WINDOW
     return subprocess.Popen(
-        [sys.executable, str(WORKER), *arguments],
+        worker_command(WORKER, arguments),
         cwd=PROJECT_ROOT,
         stdin=None if one_shot else subprocess.PIPE,
         stdout=None,

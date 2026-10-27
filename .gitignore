@@ -3,3 +3,7 @@ __pycache__/
 backups/
 logs/
 scripts.zip
+.venv-build/
+build/
+dist/
+WTHelper.spec

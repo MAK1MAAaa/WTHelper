@@ -22,7 +22,8 @@ import uuid
 ENVIRONMENT = "cn-cn-prod"
 MAX_COUNT = (1 << 53) - 1
 MAX_FILE_SIZE = 1_048_576
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
+                else Path(__file__).resolve().parent.parent)
 
 
 class SaveError(Exception):
